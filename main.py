@@ -1,38 +1,57 @@
-import os
-import requests
 from fastapi import FastAPI
-import uvicorn
+import asyncio
+import websockets
+import json
 
 app = FastAPI()
 
-# Credenciais da API de Origem
-ORIGEM_URL = "https://apidoublemax.pybots.com.br/api/results"
-AUTH = ("ivan", "Manuela2021@")
+# Nossa "memória" para guardar os giros sem depender de API externa
+historico_bruzi = []
+
+async def conectar_sinal_real():
+    uri = "wss://api-v2.blaze.com/replication/?EIO=3&transport=websocket" # Exemplo da Blaze/DoubleMax
+    
+    while True:
+        try:
+            async with websockets.connect(uri) as websocket:
+                print("✅ IA BRUZI Conectada ao sinal direto!")
+                while True:
+                    msg = await websocket.recv()
+                    
+                    # Filtra apenas quando sai um resultado novo (giro completo)
+                    if 'double.tick' in msg:
+                        dados = json.loads(msg[str(msg).find('{'):])
+                        cor = "VERMELHO" if dados['color'] == 1 else "PRETO" if dados['color'] == 2 else "BRANCO"
+                        novo_giro = {
+                            "id": dados['id'],
+                            "valor": dados['roll'],
+                            "cor": cor,
+                            "sinal": "🔴" if cor == "VERMELHO" else "⚫" if cor == "PRETO" else "⚪"
+                        }
+                        
+                        # Adiciona no topo do nosso histórico
+                        if not historico_bruzi or novo_giro['id'] != historico_bruzi[0]['id']:
+                            historico_bruzi.insert(0, novo_giro)
+                            if len(historico_bruzi) > 20: historico_bruzi.pop()
+                            print(f"🎰 Novo Giro Detectado: {cor} ({dados['roll']})")
+        except Exception as e:
+            print(f"🚨 Conexão perdida, tentando reconectar em 5s... {e}")
+            await asyncio.sleep(5)
+
+# Inicia o rastreador assim que a API liga
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(conectar_sinal_real())
 
 @app.get("/api/atualizada")
-def buscar_dados():
-    try:
-        response = requests.get(ORIGEM_URL, auth=AUTH)
-        if response.status_code == 200:
-            dados = response.json()
-            # Processamento para a IA BRUZI
-            processados = []
-            for item in dados[:15]:
-                cor = item.get("color")
-                emoji = "🔴" if cor == "red" else "⚫" if cor == "black" else "⚪"
-                txt_cor = "VERMELHO" if cor == "red" else "PRETO" if cor == "black" else "BRANCO"
-                
-                processados.append({
-                    "id": item.get("id"),
-                    "resultado": txt_cor,
-                    "sinal": emoji,
-                    "valor": item.get("value")
-                })
-            return {"sucesso": True, "dados": processados}
-        return {"sucesso": False}
-    except Exception as e:
-        return {"erro": str(e)}
+def pegar_dados():
+    return {
+        "sucesso": True,
+        "fonte": "Propria (IA BRUZI)",
+        "dados": historico_bruzi
+    }
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+@app.get("/")
+def home():
+    return {"status": "IA BRUZI ONLINE 24H", "historico_tamanho": len(historico_bruzi)}
+    
